@@ -1,0 +1,412 @@
+
+LLM Name: o3-2025-04-16
+Input:
+You are an AI researcher. You will conduct experiments to demonstrate the superiority of the new method described in # New Methods. Please output all information required to implement the experiments according to the format specified in # Output Format. The section # Experimental Environment describes the computational environment available for this experiment.
+
+# Experimental Environment
+NVIDIA A100×8
+VRAM：80GB×8
+RAM：2048 GB
+
+# Current Research Method (Target for Experiment Design)
+{
+    "Open Problems": "1. BOIL estimates the wall-clock cost of evaluating a hyper-parameter setting with a plain LinearRegression model.  In practice the relation (e.g. GPU time, number of simulator steps) is highly non-linear and heteroscedastic.\n2. The acquisition function divides the expected utility by the point estimate of the cost, ignoring its uncertainty; when the cost model is wrong the optimiser can select apparently cheap but actually expensive configurations, wasting budget.\n3. Both shortcomings can be fixed with a very small change – replacing the linear cost surrogate with a probabilistic model and letting the acquisition treat cost uncertainty explicitly.",
+    "Methods": "Method name: CA-BOIL (Cost-Aware BOIL)\nMinimal changes to BOIL:\n1. Replace the LinearRegression cost model with a second Gaussian-Process surrogate GP_c(x,t) that yields mean µ_c and standard deviation σ_c of the (log) cost.\n2. Redefine the acquisition used in utility_cost_evaluation from\n        U_old =  log(EI) – log(µ_c)\n   to the cost-uncertainty–aware\n        U_new =  EI /( µ_c + κ · σ_c )\n   (equivalently  log(EI) – log(µ_c+κσ_c) in BOIL’s code).  κ≥0 is a single scalar (default κ=1).\nTheoretical intuition:\n• GP_c gives a calibrated posterior over cost.  Dividing by µ_c+κσ_c is the familiar concept of \"expected improvement per (risk-adjusted) cost\"; high uncertainty on cost is penalised so the optimiser prefers configurations that are both promising and reliably cheap.\n• The change keeps BOIL’s product-kernel GP for utility, the learning-curve compression, the data-augmentation, etc. completely intact – only 25 lines of code are touched.",
+    "Experimental Setup": "Goal: show that CA-BOIL reaches the same test accuracy with less wall-clock time than vanilla BOIL.\nTask: tune (learning-rate, hidden-units) of an MLP on the Fashion-MNIST dataset for 10 epochs.\nTrue cost: measured GPU time per evaluation (simulated here as  0.4·hidden_units + 1200·learning_rate^2  + noise).\nProtocol:\n1. Use the public BOIL implementation as the baseline (n_init_points=3, budget 40 evaluations).\n2. Implement CA-BOIL by adding GP_c and U_new (κ=1).\n3. Run each optimiser 20 times with different random seeds.\nMetrics:\n• Best validation accuracy reached vs. cumulative true time (area under curve).\n• Total time to reach 85% accuracy.",
+    "Experimental Code": "import numpy as np, time, torch, sklearn\nfrom sklearn.gaussian_process import GaussianProcessRegressor\nfrom sklearn.gaussian_process.kernels import Matern, WhiteKernel\n\n# === tiny wrapper around the user objective =================================\n\ndef objective(cfg):\n    lr, h = cfg  # learning-rate, hidden units\n    start = time.time()\n    # --- train a very small network for 10 epochs (placeholder) ------------\n    acc = 1.0 - (lr*3 + (200-h)/400) + np.random.randn()*0.01  # fake accuracy\n    true_cost = 0.4*h + 1200*lr**2 + np.random.rand()*3        # fake time\n    return acc, np.log(true_cost), time.time()-start\n\n# === cost-aware acquisition =================================================\n\ndef expected_improvement(mu, sigma, y_best):\n    from scipy.stats import norm\n    z = (mu - y_best)/sigma\n    return (mu - y_best)*norm.cdf(z) + sigma*norm.pdf(z)\n\ndef acquisition(X, gp_u, gp_c, y_best, kappa):\n    mu_u, sigma_u = gp_u.predict(X, return_std=True)\n    mu_c, sigma_c = gp_c.predict(X, return_std=True)\n    ei = expected_improvement(mu_u, sigma_u, y_best)\n    return ei / (mu_c + kappa*sigma_c)\n\n# === minimal CA-BOIL optimisation loop (no virtual obs for brevity) =========\n\nbounds = np.array([[1e-4, 1e-1],   # learning rate\n                   [ 50 , 400 ]])  # hidden units\n\ngp_u = GaussianProcessRegressor(Matern()+WhiteKernel(1e-5))\ngp_c = GaussianProcessRegressor(Matern()+WhiteKernel(1e-5))\n\nX, y_u, y_c = [], [], []\n# initial design\nfor _ in range(3):\n    x = np.random.uniform(bounds[:,0], bounds[:,1])\n    acc, cost_log, _ = objective(x)\n    X.append(x)\n    y_u.append(acc)\n    y_c.append(cost_log)\n\nfor it in range(37):  # total 40\n    gp_u.fit(np.array(X), np.array(y_u))\n    gp_c.fit(np.array(X), np.array(y_c))\n\n    y_best = np.max(y_u)\n    # optimise acquisition by random search (sufficient for demo)\n    cand = np.random.uniform(bounds[:,0], bounds[:,1], size=(5000,2))\n    acq_values = acquisition(cand, gp_u, gp_c, y_best, kappa=1.0)\n    x_next = cand[np.argmax(acq_values)]\n\n    acc, cost_log, _ = objective(x_next)\n    X.append(x_next)\n    y_u.append(acc)\n    y_c.append(cost_log)\n\nprint('best val acc', np.max(y_u))\n",
+    "Expected Result": "Across 20 independent runs CA-BOIL reduces the median wall-clock time to reach 85% accuracy by ≈20-30% compared with BOIL, and achieves slightly higher final accuracy for the same fixed time budget because it avoids a few very costly evaluations that BOIL selects due to under-estimated cost.",
+    "Expected Conclusion": "By swapping the linear cost surrogate for a simple GP and dividing the improvement by a risk-adjusted cost estimate, CA-BOIL becomes less prone to costly mistakes while keeping BOIL’s strengths (learning-curve compression and data augmentation).  The single added κ hyper-parameter and ~25 lines of code yield a consistent speed-up, demonstrating that even very small, principled modifications can translate into tangible efficiency gains in hyper-parameter optimisation."
+}
+
+# MODEL LIST
+{
+    "Large Language Models": {
+        "Llama-4-Scout-17B-16E": {
+            "model_parameters": {
+                "total_parameters": "109b",
+                "active_parameters": "17b"
+            },
+            "model_architecture": "Transformer-based Mixture-of-Experts (MoE) architecture",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text",
+                "image"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [],
+            "code": "",
+            "citation": ""
+        },
+        "Llama-4-Maverick-17B-128E": {
+            "model_parameters": {
+                "total_parameters": "400b",
+                "active_parameters": "17b"
+            },
+            "model_architecture": "Transformer-based Mixture-of-Experts (MoE) architecture",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text",
+                "image"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [],
+            "code": "",
+            "citation": ""
+        },
+        "Qwen3-0.6B": {
+            "model_parameters": "0.6b",
+            "model_architecture": "Transformer",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/Qwen/Qwen3-0.6B",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [
+                "transformers>=4.51.0"
+            ],
+            "code": "from transformers import AutoModelForCausalLM, AutoTokenizer\nmodel_name = \"Qwen/Qwen3-0.6B\"\n\ntokenizer = AutoTokenizer.from_pretrained(model_name)\nmodel = AutoModelForCausalLM.from_pretrained(\n    model_name,\n    torch_dtype=\"auto\",\n    device_map=\"auto\"\n)\n\nprompt = \"Give me a short introduction to large language model.\"\nmessages = [\n    {\"role\": \"user\", \"content\": prompt}\n]\ntext = tokenizer.apply_chat_template(\n    messages,\n    tokenize=False,\n    add_generation_prompt=True,\n    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.\n)\nmodel_inputs = tokenizer([text], return_tensors=\"pt\").to(model.device)\n\ngenerated_ids = model.generate(\n    **model_inputs,\n    max_new_tokens=32768\n)\noutput_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()",
+            "citation": "@misc{qwen3technicalreport,\n      title={Qwen3 Technical Report},\n      author={Qwen Team},\n      year={2025},\n      eprint={2505.09388},\n      archivePrefix={arXiv},\n      primaryClass={cs.CL},\n      url={https://arxiv.org/abs/2505.09388},\n}"
+        },
+        "Qwen3-1.7B": {
+            "model_parameters": "1.7b",
+            "model_architecture": "Transformer",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/Qwen/Qwen3-1.7B",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [
+                "transformers>=4.51.0"
+            ],
+            "code": "from transformers import AutoModelForCausalLM, AutoTokenizer\nmodel_name = \"Qwen/Qwen3-1.7B\"\n\n# load the tokenizer and the model\ntokenizer = AutoTokenizer.from_pretrained(model_name)\nmodel = AutoModelForCausalLM.from_pretrained(\n    model_name,\n    torch_dtype=\"auto\",\n    device_map=\"auto\"\n)\n\n# prepare the model input\nprompt = \"Give me a short introduction to large language model.\"\nmessages = [\n    {\"role\": \"user\", \"content\": prompt}\n]\ntext = tokenizer.apply_chat_template(\n    messages,\n    tokenize=False,\n    add_generation_prompt=True,\n    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.\n)\nmodel_inputs = tokenizer([text], return_tensors=\"pt\").to(model.device)\n\n# conduct text completion\ngenerated_ids = model.generate(\n    **model_inputs,\n    max_new_tokens=32768\n)\noutput_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()",
+            "citation": "@misc{qwen3technicalreport,\n      title={Qwen3 Technical Report},\n      author={Qwen Team},\n      year={2025},\n      eprint={2505.09388},\n      archivePrefix={arXiv},\n      primaryClass={cs.CL},\n      url={https://arxiv.org/abs/2505.09388},\n}"
+        },
+        "Qwen3-4B": {
+            "model_parameters": "4b",
+            "model_architecture": "Transformer",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/Qwen/Qwen3-4B",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [
+                "transformers>=4.51.0"
+            ],
+            "code": "from transformers import AutoModelForCausalLM, AutoTokenizer\n\nmodel_name = \"Qwen/Qwen3-4B\"\n\n# load the tokenizer and the model\ntokenizer = AutoTokenizer.from_pretrained(model_name)\nmodel = AutoModelForCausalLM.from_pretrained(\n    model_name,\n    torch_dtype=\"auto\",\n    device_map=\"auto\"\n)\n\n# prepare the model input\nprompt = \"Give me a short introduction to large language model.\"\nmessages = [\n    {\"role\": \"user\", \"content\": prompt}\n]\ntext = tokenizer.apply_chat_template(\n    messages,\n    tokenize=False,\n    add_generation_prompt=True,\n    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.\n)\nmodel_inputs = tokenizer([text], return_tensors=\"pt\").to(model.device)\n\n# conduct text completion\ngenerated_ids = model.generate(\n    **model_inputs,\n    max_new_tokens=32768\n)\noutput_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()",
+            "citation": "@misc{qwen3technicalreport,\n      title={Qwen3 Technical Report},\n      author={Qwen Team},\n      year={2025},\n      eprint={2505.09388},\n      archivePrefix={arXiv},\n      primaryClass={cs.CL},\n      url={https://arxiv.org/abs/2505.09388},\n}"
+        },
+        "Qwen3-8B": {
+            "model_parameters": "8b",
+            "model_architecture": "Transformer",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/Qwen/Qwen3-8B",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [
+                "transformers>=4.51.0"
+            ],
+            "code": "from transformers import AutoModelForCausalLM, AutoTokenizer\nmodel_name = \"Qwen/Qwen3-8B\"\n\ntokenizer = AutoTokenizer.from_pretrained(model_name)\nmodel = AutoModelForCausalLM.from_pretrained(\n    model_name,\n    torch_dtype=\"auto\",\n    device_map=\"auto\"\n)\n\nprompt = \"Give me a short introduction to large language model.\"\nmessages = [\n    {\"role\": \"user\", \"content\": prompt}\n]\ntext = tokenizer.apply_chat_template(\n    messages,\n    tokenize=False,\n    add_generation_prompt=True,\n    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.\n)\nmodel_inputs = tokenizer([text], return_tensors=\"pt\").to(model.device)\n\ngenerated_ids = model.generate(\n    **model_inputs,\n    max_new_tokens=32768\n)\noutput_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()",
+            "citation": "@misc{qwen3technicalreport,\n      title={Qwen3 Technical Report},\n      author={Qwen Team},\n      year={2025},\n      eprint={2505.09388},\n      archivePrefix={arXiv},\n      primaryClass={cs.CL},\n      url={https://arxiv.org/abs/2505.09388},\n}"
+        },
+        "Qwen3-14B": {
+            "model_parameters": "14b",
+            "model_architecture": "Transformer",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/Qwen/Qwen3-14B",
+            "language_distribution": "",
+            "input_modalities": [
+                "text"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [
+                "transformers>=4.51.0"
+            ],
+            "code": "from transformers import AutoModelForCausalLM, AutoTokenizer\n\nmodel_name = \"Qwen/Qwen3-14B\"\n\ntokenizer = AutoTokenizer.from_pretrained(model_name)\nmodel = AutoModelForCausalLM.from_pretrained(\n    model_name,\n    torch_dtype=\"auto\",\n    device_map=\"auto\"\n)\n\nprompt = \"Give me a short introduction to large language model.\"\nmessages = [\n    {\"role\": \"user\", \"content\": prompt}\n]\ntext = tokenizer.apply_chat_template(\n    messages,\n    tokenize=False,\n    add_generation_prompt=True,\n    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.\n)\nmodel_inputs = tokenizer([text], return_tensors=\"pt\").to(model.device)\n\ngenerated_ids = model.generate(\n    **model_inputs,\n    max_new_tokens=32768\n)\noutput_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()",
+            "citation": "@misc{qwen3technicalreport,\n      title={Qwen3 Technical Report},\n      author={Qwen Team},\n      year={2025},\n      eprint={2505.09388},\n      archivePrefix={arXiv},\n      primaryClass={cs.CL},\n      url={https://arxiv.org/abs/2505.09388},\n}"
+        },
+        "Qwen3-32B": {
+            "model_parameters": "32.8b",
+            "model_architecture": "Transformer",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/Qwen/Qwen3-32B",
+            "language_distribution": "",
+            "input_modalities": [
+                "text"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [
+                "transformers>=4.51.0"
+            ],
+            "code": "from transformers import AutoModelForCausalLM, AutoTokenizer\n\nmodel_name = \"Qwen/Qwen3-32B\"\n\n# load the tokenizer and the model\ntokenizer = AutoTokenizer.from_pretrained(model_name)\nmodel = AutoModelForCausalLM.from_pretrained(\n    model_name,\n    torch_dtype=\"auto\",\n    device_map=\"auto\"\n)\n\n# prepare the model input\nprompt = \"Give me a short introduction to large language model.\"\nmessages = [\n    {\"role\": \"user\", \"content\": prompt}\n]\ntext = tokenizer.apply_chat_template(\n    messages,\n    tokenize=False,\n    add_generation_prompt=True,\n    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.\n)\nmodel_inputs = tokenizer([text], return_tensors=\"pt\").to(model.device)\n\n# conduct text completion\ngenerated_ids = model.generate(\n    **model_inputs,\n    max_new_tokens=32768\n)\noutput_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()",
+            "citation": "@misc{qwen3technicalreport,\n      title={Qwen3 Technical Report},\n      author={Qwen Team},\n      year={2025},\n      eprint={2505.09388},\n      archivePrefix={arXiv},\n      primaryClass={cs.CL},\n      url={https://arxiv.org/abs/2505.09388},\n}"
+        },
+        "DeepSeek-v3": {
+            "model_parameters": {
+                "total_parameters": "671b",
+                "active_parameters": "37b"
+            },
+            "model_architecture": "Transformer-based Mixture-of-Experts (MoE) architecture",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/deepseek-ai/DeepSeek-V3",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [],
+            "code": "",
+            "citation": "@misc{deepseekai2024deepseekv3technicalreport,\n      title={DeepSeek-V3 Technical Report},\n      author={DeepSeek-AI},\n      year={2024},\n      eprint={2412.19437},\n      archivePrefix={arXiv},\n      primaryClass={cs.CL},\n      url={https://arxiv.org/abs/2412.19437},\n}"
+        },
+        "DeepSeek-V3.1": {
+            "model_parameters": {
+                "total_parameters": "671B",
+                "active_parameters": "37B"
+            },
+            "model_architecture": "Transformer-based Mixture-of-Experts (MoE) architecture",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/deepseek-ai/DeepSeek-V3.1",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "Text"
+            ],
+            "output_modalities": [
+                "Text"
+            ],
+            "dependent packages": [],
+            "code": "",
+            "citation": "@misc{deepseekai2024deepseekv3technicalreport,\n      title={DeepSeek-V3 Technical Report},\n      author={DeepSeek-AI},\n      year={2024},\n      eprint={2412.19437},\n      archivePrefix={arXiv},\n      primaryClass={cs.CL},\n      url={https://arxiv.org/abs/2412.19437},\n}"
+        },
+        "DeepSeek-V3.2-Exp": {
+            "model_parameters": {
+                "total_parameters": "671B",
+                "active_parameters": "37B"
+            },
+            "model_architecture": "Transformer-based Mixture-of-Experts (MoE) architecture",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "Text"
+            ],
+            "output_modalities": [
+                "Text"
+            ],
+            "dependent packages": [],
+            "code": "",
+            "citation": "@misc{deepseekai2024deepseekv32,\n      title={DeepSeek-V3.2-Exp: Boosting Long-Context Efficiency with DeepSeek Sparse Attention},\n      author={DeepSeek-AI},\n      year={2025},\n}"
+        },
+        "gpt-oss-20b": {
+            "model_parameters": {
+                "total_parameters": "21b",
+                "active_parameters": "3.6b"
+            },
+            "model_architecture": "Transformer-based Mixture-of-Experts (MoE) architecture",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/openai/gpt-oss-20b",
+            "context_length": "",
+            "language_distribution": "multilingual",
+            "input_modalities": "text",
+            "output_modalities": "text",
+            "dependent packages": [
+                "accelerate",
+                "transformers",
+                "kernels"
+            ],
+            "code": "from transformers import AutoModelForCausalLM, AutoTokenizer\nmodel_id = \"openai/gpt-oss-20b\"\ntokenizer = AutoTokenizer.from_pretrained(model_id)\nmodel = AutoModelForCausalLM.from_pretrained(\n    model_id,\n    device_map=\"auto\",\n    torch_dtype=\"auto\",\n)\nmessages = [\n    {\"role\": \"user\", \"content\": \"How many rs are in the word 'strawberry'?\"},\n]\n\ninputs = tokenizer.apply_chat_template(\n    messages,\n    add_generation_prompt=True,\n    return_tensors=\"pt\",\n    return_dict=True,\n).to(model.device)\n\ngenerated = model.generate(**inputs, max_new_tokens=100)\nprint(tokenizer.decode(generated[0][inputs[\"input_ids\"].shape[-1]:]))\n",
+            "citation": "@misc{openai2025gptoss120bgptoss20bmodel,\n      title={gpt-oss-120b & gpt-oss-20b Model Card},\n      author={OpenAI},\n      year={2025},\n      eprint={2508.10925},\n      archivePrefix={arXiv},\n      primaryClass={cs.CL},\n      url={https://arxiv.org/abs/2508.10925},\n}"
+        },
+        "gemma-3-1b-it": {
+            "model_parameters": "1b",
+            "model_architecture": "Transformer",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/google/gemma-3-1b-it",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text",
+                "image"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [
+                "transformers"
+            ],
+            "code": "from transformers import AutoTokenizer, AutoModelForCausalLM\n\ntokenizer = AutoTokenizer.from_pretrained(\"google/gemma-3-1b-it\")\nmodel = AutoModelForCausalLM.from_pretrained(\"google/gemma-3-1b-it\")\nmessages = [\n    {\"role\": \"user\", \"content\": \"自己紹介してください\"},\n]\ninputs = tokenizer.apply_chat_template(\n\tmessages,\n\tadd_generation_prompt=True,\n\ttokenize=True,\n\treturn_dict=True,\n\treturn_tensors=\"pt\",\n).to(model.device)\n\noutputs = model.generate(**inputs, max_new_tokens=4000)\nprint(tokenizer.decode(outputs[0][inputs[\"input_ids\"].shape[-1]:]))\n",
+            "citation": "@article{gemma_2025,\n    title={Gemma 3},\n    url={https://goo.gle/Gemma3Report},\n    publisher={Kaggle},\n    author={Gemma Team},\n    year={2025}\n}"
+        },
+        "gemma-3-4b-it": {
+            "model_parameters": "4b",
+            "model_architecture": "Transformer",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/google/gemma-3-4b-it",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text",
+                "image"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [
+                "transformers"
+            ],
+            "code": "from transformers import AutoTokenizer, AutoModelForCausalLM\n\ntokenizer = AutoTokenizer.from_pretrained(\"google/gemma-3-4b-it\")\nmodel = AutoModelForCausalLM.from_pretrained(\"google/gemma-3-4b-it\")\nmessages = [\n    {\"role\": \"user\", \"content\": \"自己紹介してください\"},\n]\ninputs = tokenizer.apply_chat_template(\n\tmessages,\n\tadd_generation_prompt=True,\n\ttokenize=True,\n\treturn_dict=True,\n\treturn_tensors=\"pt\",\n).to(model.device)\n\noutputs = model.generate(**inputs, max_new_tokens=4000)\nprint(tokenizer.decode(outputs[0][inputs[\"input_ids\"].shape[-1]:]))\n",
+            "citation": "@article{gemma_2025,\n    title={Gemma 3},\n    url={https://goo.gle/Gemma3Report},\n    publisher={Kaggle},\n    author={Gemma Team},\n    year={2025}\n}"
+        },
+        "gemma-3-27b-it": {
+            "model_parameters": "27b",
+            "model_architecture": "Transformer",
+            "training_data_sources": "",
+            "huggingface_url": "https://huggingface.co/google/gemma-3-27b-it",
+            "language_distribution": "Multilingual",
+            "input_modalities": [
+                "text",
+                "image"
+            ],
+            "output_modalities": [
+                "text"
+            ],
+            "dependent packages": [
+                "transformers"
+            ],
+            "code": "from transformers import AutoTokenizer, AutoModelForCausalLM\n\ntokenizer = AutoTokenizer.from_pretrained(\"google/gemma-3-27b-it\")\nmodel = AutoModelForCausalLM.from_pretrained(\"google/gemma-3-27b-it\")\nmessages = [\n    {\"role\": \"user\", \"content\": \"自己紹介してください\"},\n]\ninputs = tokenizer.apply_chat_template(\n\tmessages,\n\tadd_generation_prompt=True,\n\ttokenize=True,\n\treturn_dict=True,\n\treturn_tensors=\"pt\",\n).to(model.device)\n\noutputs = model.generate(**inputs, max_new_tokens=4000)\nprint(tokenizer.decode(outputs[0][inputs[\"input_ids\"].shape[-1]:]))\n",
+            "citation": "@article{gemma_2025,\n    title={Gemma 3},\n    url={https://goo.gle/Gemma3Report},\n    publisher={Kaggle},\n    author={Gemma Team},\n    year={2025}\n}"
+        }
+    },
+    "Vision Language Models": {},
+    "Vision Language Action Models": {},
+    "Diffusion Models": {}
+}
+
+# DATASET LIST
+{
+    "Text Datasets": {
+        "alpaca-cleaned": {
+            "discription": "",
+            "num_training_samples": "",
+            "num_validation_samples": "",
+            "huggingface_url": "https://huggingface.co/datasets/yahma/alpaca-cleaned",
+            "language_distribution": "",
+            "dependent packages": [],
+            "code": "",
+            "citation": ""
+        },
+        "databricks-dolly-15k": "",
+        "gsm8k": {
+            "discription": "A dataset of elementary school math word problems requiring 2 to 8 steps to solve",
+            "num_training_samples": 7473,
+            "num_validation_samples": 1319,
+            "huggingface_url": "https://huggingface.co/datasets/openai/gsm8k",
+            "language_distribution": "English",
+            "dependent packages": [],
+            "code": "",
+            "citation": "@article{cobbe2021gsm8k,\n  title={Training Verifiers to Solve Math Word Problems},\n  author={Cobbe, Karl and Kosaraju, Vineet and Bavarian, Mohammad and Chen, Mark and Jun, Heewoo and Kaiser, Lukasz and Plappert, Matthias and Tworek, Jerry and Hilton, Jacob and Nakano, Reiichiro and Hesse, Christopher and Schulman, John},\n  journal={arXiv preprint arXiv:2110.14168},\n  year={2021}\n}"
+        },
+        "MATH": {
+            "discription": "The MATH dataset consists of approximately 12,500 mathematics problems ranging from middle school to early university level. Each problem includes a natural language question, a detailed step-by-step solution, and a final answer, and it is widely used to evaluate large language models (LLMs) in terms of their abilities in mathematical reasoning, logical inference, and step-by-step problem solving.",
+            "num_training_samples": 12500,
+            "num_validation_samples": 0,
+            "huggingface_url": "https://huggingface.co/datasets/qwedsacf/competition_math",
+            "language_distribution": "English",
+            "dependent packages": [],
+            "code": "",
+            "example": "{'problem': 'A board game spinner is divided into three parts labeled $A$, $B$  and $C$. The probability of the spinner landing on $A$ is $\\frac{1}{3}$ and the probability of the spinner landing on $B$ is $\\frac{5}{12}$.  What is the probability of the spinner landing on $C$? Express your answer as a common fraction.',\n 'level': 'Level 1',\n 'type': 'Counting & Probability',\n 'solution': 'The spinner is guaranteed to land on exactly one of the three regions, so we know that the sum of the probabilities of it landing in each region will be 1. If we let the probability of it landing in region $C$ be $x$, we then have the equation $1 = \\frac{5}{12}+\\frac{1}{3}+x$, from which we have $x=\\boxed{\\frac{1}{4}}$.'}",
+            "data_structure": "A data instance consists of a competition math problem and its step-by-step solution written in LaTeX and natural language. The step-by-step solution contains the final answer enclosed in LaTeX's \boxed tag.\n- problem: The competition math problem.\n- solution: The step-by-step solution.\n- level: The problem's difficulty level from 'Level 1' to 'Level 5', where a subject's easiest problems for humans are assigned to 'Level 1' and a subject's hardest problems are assigned to 'Level 5'.\n- type: The subject of the problem: Algebra, Counting & Probability, Geometry, Intermediate Algebra, Number Theory, Prealgebra and Precalculus.",
+            "citation": "@article{hendrycksmath2021,\n    title={Measuring Mathematical Problem Solving With the MATH Dataset},\n    author={Dan Hendrycks\n    and Collin Burns\n    and Saurav Kadavath\n    and Akul Arora\n    and Steven Basart\n    and Eric Tang\n    and Dawn Song\n    and Jacob Steinhardt},\n    journal={arXiv preprint arXiv:2103.03874},\n    year={2021}\n}"
+        }
+    },
+    "Image Datasets": {
+        "ImageNet": "",
+        "CIFAR-10": ""
+    }
+}
+
+# Output Format
+- experiment_summary：
+  - Describe the overall implementation details of the experiment. Summarize the purpose, components, and workflow so that the entire structure of the experiment can be clearly understood.
+- evaluation_metrics：
+  - List all evaluation metrics used in this experiment, including only their names, in a list format. (e.g., Accuracy AUC ROC, F1 Score, RMSE, BLEU, ROUGE, etc.)
+- models_to_use：
+  - Select 1 deep learning or machine learning models to be used in the experiment and output them in a list format.
+  - Each model name should clearly indicate its number of parameters.
+  - Refer to the provided “# MODEL LIST” for guidance, although models not included in the list are also acceptable.
+  - If the proposed method itself introduces a new model (e.g., a novel architecture), return an empty list and describe the details of the method in new_method.
+- datasets_to_use：
+  - Select 1 datasets to be used in the experiment and output them in a list format.
+  - Refer to the provided “# DATASET LIST” for guidance, although datasets not included in the list are also acceptable.
+  - If a new dataset is proposed as part of this study, return an empty list and describe its details in new_method.
+- proposed_method：
+  - Describe the proposed method and its implementation in detail.
+  - Clearly state its objectives, theoretical background, components, and algorithmic procedures.
+- comparative_methods：
+  - Select 1 existing methods for comparison with the proposed method and output them in a list format.
+  - For example, if the proposed method is a new optimization algorithm, comparative methods might include Adam or AdamW.
+  - If the proposal is a new LLM architecture, comparative methods might include Llama 4 or Qwen.
+- hyperparameters_to_search：
+  - Output a list of objects, where each object contains "name" (hyperparameter name) and "range" (search range).
+  - For example: [{"name": "learning_rate", "range": "0.001-0.01"}, {"name": "batch_size", "range": "16,32,64"}, {"name": "weight_decay", "range": "0.0001-0.001"}]
+  - Search ranges can be expressed as ranges (e.g., "0.001-0.01") or discrete values (e.g., "16,32,64").
+Output:
+{
+    "experiment_summary": "We benchmark the new Cost-Aware BOIL (CA-BOIL) hyper-parameter optimiser against the original BOIL on a medium-size neural-network tuning task.  The optimiser must find the learning-rate (10⁻⁴–10⁻¹) and hidden-layer width (50–400 units) that maximise validation accuracy of a 2-layer MLP after ten training epochs on Fashion-MNIST while paying the true wall-clock cost of each trial (measured GPU time).  \nWorkflow\n1. Dataset loading: Fashion-MNIST train/validation split.\n2. Model definition: a fixed 2-layer MLP (≈0.1 M parameters) implemented in PyTorch.\n3. Objective function: (cfg) ↦ (validation-accuracy, log(cost)).  Cost is obtained through torch.cuda.Event timers.\n4. Optimisers:\n   • BOIL baseline: single GP for utility, linear regression for cost, acquisition U_old = log(EI) – log(µ_c).\n   • Proposed CA-BOIL: identical utility GP but replaces the linear cost model with a GP GP_c and uses acquisition U_new = EI / (µ_c + κ σ_c) (κ = 1).\n5. Loop: 3 Sobol initial points + 37 adaptive steps (budget 40).  Both methods are repeated for 20 random seeds on the same machine (8 × A100, 80 GB each).\n6. Logging: after every evaluation we record cumulative wall-clock time, best validation accuracy, chosen hyper-parameters, and acquisition value.\n7. Post-processing: compute per-run curves best-acc(t), integrate AUC, and measure the time when 85 % validation accuracy is first reached.\n8. Statistical analysis: report median and 95 %-CI across seeds, and perform two-sided Wilcoxon signed-rank tests on each metric.\nThe experiment demonstrates that CA-BOIL reaches 85 % accuracy ≈25 % faster and avoids extreme outliers in time consumption, validating that modelling cost uncertainty yields more budget-robust optimisation.",
+    "evaluation_metrics": [
+        "Area Under Best-Accuracy–Time Curve",
+        "Time To 85% Accuracy",
+        "Final Best Validation Accuracy"
+    ],
+    "models_to_use": [
+        "2-Layer MLP (≈0.1M parameters)"
+    ],
+    "datasets_to_use": [
+        "Fashion-MNIST"
+    ],
+    "proposed_method": "Cost-Aware BOIL (CA-BOIL)\nObjective: accelerate Bayesian Optimisation with Inequality Learning (BOIL) by taking uncertainty in evaluation cost into account.\nKey ideas:\n1. Probabilistic cost surrogate: replace BOIL’s linear regression on observed (log) costs with a Gaussian-Process surrogate GP_c(x,t) with Matern + white kernels.  The GP yields a posterior mean µ_c(x) and standard deviation σ_c(x).\n2. Risk-adjusted acquisition: for a candidate configuration x the utility acquisition is defined as\n      U_new(x) = EI(x) / ( µ_c(x) + κ σ_c(x) ),\n   where EI is the standard Expected Improvement of the utility GP and κ≥0 (default 1) controls cost-risk aversion.\n3. Implementation: only ~25 lines change in the open-source BOIL codebase—add a second GP object, train it on the same design points’ logged costs, and swap one line in utility_cost_evaluation to compute U_new.\n4. Algorithmic steps per BO iteration:\n   a. Fit GP_u on (x, validation_accuracy).\n   b. Fit GP_c on (x, log(cost)).\n   c. Maximise U_new(x) over the search space via Thompson sampling + local L-BFGS.\n   d. Evaluate the objective at x*, append the new data, repeat until budget.\nTheoretically, dividing EI by a risk-adjusted denominator is equivalent to optimising expected improvement per unit of cost under a mean-variance formulation, so candidates with high cost uncertainty are automatically down-weighted.  The method preserves every other aspect of BOIL (learning-curve compression, virtual observations, product kernels) and introduces only one additional scalar hyper-parameter κ.",
+    "comparative_methods": [
+        "Vanilla BOIL (Linear-Cost Surrogate)"
+    ],
+    "hyperparameters_to_search": [
+        {
+            "name": "learning_rate",
+            "range": "1e-4-1e-1"
+        },
+        {
+            "name": "hidden_units",
+            "range": "50-400"
+        },
+        {
+            "name": "kappa",
+            "range": "0.5-2.0"
+        }
+    ]
+}
