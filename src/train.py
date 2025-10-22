@@ -339,7 +339,8 @@ def main(cfg: DictConfig):
         os.environ["WANDB_MODE"] = "disabled"
 
     # --------------------------- data ------------------------------
-    device = torch.device("cuda" if torch.cuda.is_available() and cfg.training.device == "cuda" else "cpu")
+    device_cfg = OmegaConf.select(cfg, "training.device", default="cuda")
+    device = torch.device("cuda" if torch.cuda.is_available() and device_cfg == "cuda" else "cpu")
     train_loader, val_loader, _ = get_dataloaders(cfg)
 
     # --------------------- launch optimiser ------------------------
