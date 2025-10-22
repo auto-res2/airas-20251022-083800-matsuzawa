@@ -1,0 +1,55 @@
+run_id: comparative-1-2-Layer-MLP-0.1M-parameters--Fashion-MNIST
+method: comparative-1
+algorithm:
+  name: BOIL
+  n_init_points: 3
+  total_evaluations: 40
+  cost_model:
+    type: linear           # original BOIL uses plain LinearRegression
+  acquisition:
+    type: log_ei_minus_log_cost
+    formula: "log(EI) - log(mu_c)"
+model:
+  name: 2-layer-mlp
+  input_dim: 784
+  hidden_units: 200        # placeholder, tuned by Optuna
+  activation: relu
+  output_dim: 10
+  parameter_budget: "≈0.1M"
+dataset:
+  name: fashion_mnist
+  root: ./data
+  train_size: 50000
+  val_size: 10000
+  normalization: true
+training:
+  epochs: 10
+  batch_size: 128
+  optimizer: adam
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  device: cuda
+logging:
+  use_wandb: true
+  project: boil-baseline
+  log_interval: 1
+resources:
+  gpus_per_trial: 1
+  gpu_type: A100
+  cpus_per_trial: 4
+  memory_gb: 16
+optuna:
+  n_trials: 50
+  direction: maximize
+  sampler: tpe
+  pruner: median
+  search_space:
+    learning_rate:
+      type: loguniform
+      low: 1e-4
+      high: 1e-1
+    hidden_units:
+      type: int
+      low: 50
+      high: 400
+      step: 1

@@ -1,0 +1,61 @@
+run_id: proposed-2-Layer-MLP-0.1M-parameters--Fashion-MNIST
+method: proposed
+algorithm:
+  name: CA-BOIL
+  n_init_points: 3         # Sobol seed evaluations
+  total_evaluations: 40    # 3 initial + 37 BO steps
+  cost_model:
+    type: gp
+    kernel: matern_plus_white
+  acquisition:
+    type: ei_over_risk_adjusted_cost
+    kappa: 1.0             # default; can be tuned by Optuna
+    formula: "EI / (mu_c + kappa * sigma_c)"
+model:
+  name: 2-layer-mlp
+  input_dim: 784           # 28×28 images flattened
+  hidden_units: 200        # placeholder, will be overridden by Optuna suggestion
+  activation: relu
+  output_dim: 10
+  parameter_budget: "≈0.1M"
+dataset:
+  name: fashion_mnist
+  root: ./data
+  train_size: 50000        # 83 % of full train split
+  val_size: 10000          # 17 % of full train split
+  normalization: true
+training:
+  epochs: 10               # fixed according to protocol
+  batch_size: 128
+  optimizer: adam
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  device: cuda
+logging:
+  use_wandb: true
+  project: ca-boil
+  log_interval: 1          # log after each evaluation
+resources:
+  gpus_per_trial: 1
+  gpu_type: A100
+  cpus_per_trial: 4
+  memory_gb: 16
+optuna:
+  n_trials: 50
+  direction: maximize
+  sampler: tpe
+  pruner: median
+  search_space:
+    learning_rate:
+      type: loguniform
+      low: 1e-4
+      high: 1e-1
+    hidden_units:
+      type: int
+      low: 50
+      high: 400
+      step: 1
+    kappa:
+      type: uniform
+      low: 0.5
+      high: 2.0

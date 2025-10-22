@@ -1,0 +1,21 @@
+defaults:
+  - _self_
+  - run: ???
+
+run:
+  run_id: null
+
+results_dir: ./results
+trial_mode: false
+
+wandb:
+  entity: gengaru617-personal
+  project: 251021-test
+  mode: online  # overwritten to disabled in trial_mode
+
+method: ""
+algorithm: {}
+model: {}
+dataset: {}
+training: {}
+optuna: {}
