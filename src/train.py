@@ -314,10 +314,12 @@ def run_ca_boil(cfg: DictConfig, loaders, device):
 def main(cfg: DictConfig):
     # ------------------------- trial-mode tweaks -------------------------
     if cfg.trial_mode:
+        OmegaConf.set_struct(cfg, False)
         cfg.wandb.mode = "disabled"
         cfg.training.epochs = 1
         cfg.algorithm.total_evaluations = 1
         cfg.optuna.n_trials = 0
+        OmegaConf.set_struct(cfg, True)
 
     results_root = ensure_dir(Path(cfg.results_dir).expanduser())
     run_dir = ensure_dir(results_root / cfg.run.run_id)
